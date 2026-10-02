@@ -1,0 +1,23 @@
+# ===== Thông tin nhạy cảm — KHÔNG commit =====
+# .env chứa user/password MinIO (bản mẫu để trong .env.example)
+.env
+.env.local
+.env.*.local
+
+# ===== Thư mục build output =====
+dist/
+
+# ===== Cache log của app (nếu nằm trong repo) =====
+log-cache/
+
+# ===== File runtime / tạm =====
+*.log
+*.part
+*.tmp
+
+# ===== IDE / hệ điều hành =====
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

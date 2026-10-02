@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Log Viewer — MinIO Logs</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+
+<!-- MÀN HÌNH CẤU HÌNH LẦN ĐẦU -->
+<div id="setup" class="overlay hidden">
+  <div class="card setup-card">
+    <h1>Log Viewer</h1>
+    <p class="muted">Nhập thông tin trang <b>MinIO Console</b> — app sẽ <b>tự đăng nhập</b>, tự dò S3 API và gợi ý bucket. Thông tin được lưu vào file <code>.env</code> để lần sau không cần nhập lại.</p>
+    <label>URL chính (trang MinIO Console)
+      <input id="su-url" placeholder="https://minio.uongoc.vn — dán cả link /browser/... cũng được" spellcheck="false">
+    </label>
+    <label>URL trang đăng nhập <span class="opt">(tùy chọn)</span>
+      <input id="su-login" placeholder="https://minio.uongoc.vn/login" spellcheck="false">
+    </label>
+    <label>Tên đăng nhập
+      <input id="su-user" autocomplete="username" spellcheck="false">
+    </label>
+    <label>Mật khẩu
+      <input id="su-pass" type="password" autocomplete="current-password">
+    </label>
+    <label>Bucket chứa log <span class="opt">(để trống — app tự gợi ý)</span>
+      <input id="su-bucket" list="su-buckets" placeholder="accounting-file-logs" spellcheck="false">
+      <datalist id="su-buckets"></datalist>
+    </label>
+    <div class="row">
+      <button id="su-save" class="primary">Lưu &amp; đăng nhập</button>
+      <span id="su-msg" class="msg"></span>
+    </div>
+  </div>
+</div>
+
+<header>
+  <div class="brand">Log Viewer <span id="bucket-badge" class="badge hidden"></span></div>
+  <div class="spacer"></div>
+  <button id="btn-import" title="Mở file .tar.gz đã tải sẵn trên máy">Mở file .tar.gz</button>
+  <button id="btn-cache" title="Quản lý & dọn rác file log đã tải">Cache</button>
+  <button id="btn-settings">Cài đặt</button>
+</header>
+
+<!-- CHỌN KHOẢNG THỜI GIAN -->
+<section id="picker">
+  <div class="row wrap">
+    <label>Từ <input type="date" id="d-from"></label>
+    <label>Đến <input type="date" id="d-to"></label>
+    <span class="sep"></span>
+    <button class="quick" data-q="24h">24 giờ</button>
+    <button class="quick" data-q="7d">7 ngày</button>
+    <button class="quick" data-q="30d">30 ngày</button>
+    <span class="sep"></span>
+    <button id="btn-scan" class="primary">Quét</button>
+    <button id="btn-load" class="accent" disabled>Tải &amp; mở logs</button>
+    <input type="file" id="file-input" class="hidden">
+  </div>
+  <div id="scan-summary" class="muted">Chọn khoảng thời gian (hoặc bấm nút nhanh) rồi bấm <b>Quét</b> để xem có bao nhiêu file log.</div>
+  <div id="progress" class="hidden">
+    <div class="pbar"><div id="pbar-fill"></div></div>
+    <div class="row spread">
+      <div id="pbar-text" class="muted"></div>
+      <button id="btn-cancel" class="danger small">Hủy</button>
+    </div>
+    <details id="pbar-errors" class="hidden"><summary>Lỗi (xem chi tiết)</summary><div id="pbar-error-list"></div></details>
+  </div>
+</section>
+
+<!-- VIEWER -->
+<main id="viewer" class="hidden">
+  <div class="toolbar">
+    <button id="btn-back" title="Quay lại chọn khoảng thời gian">← Chọn ngày</button>
+    <input id="search" placeholder="Tìm trong logs… (Enter)" spellcheck="false">
+    <div class="chips" id="level-chips">
+      <button data-level="" class="on">Tất cả</button>
+      <button data-level="ERROR">ERROR</button>
+      <button data-level="WARN">WARN</button>
+      <button data-level="INFO">INFO</button>
+      <button data-level="DEBUG">DEBUG</button>
+    </div>
+    <span class="sep"></span>
+    <button id="btn-wrap" title="Bật/tắt tự xuống dòng (Alt+Z / ⌥Z)">Ngắt dòng: <b>BẬT</b></button>
+    <button id="btn-tz" title="Đổi giữa giờ máy (UTC+7) và giờ gốc UTC">Giờ máy</button>
+    <button id="btn-end" title="Nhảy tới dòng cuối">Về cuối</button>
+    <label class="jumpl">Đến dòng <input id="jump-line" type="number" min="1" placeholder="#"></label>
+    <span class="spacer"></span>
+    <button id="btn-json" title="Bật/tắt khung xem JSON bên phải (rê chuột vào đoạn JSON để xem nhanh)">Khung JSON</button>
+  </div>
+  <div id="filter-bar" class="hidden">
+    <span id="filter-text"></span>
+    <button id="btn-clear-filter" class="small">Bỏ lọc, xem toàn bộ</button>
+  </div>
+  <div id="sess-info" class="muted thin"></div>
+  <div class="split">
+    <div id="logpane">
+      <div id="loghead-wrap">
+        <div id="loghead">
+          <span class="hd">Dòng<span class="grip" data-col="ln"></span></span>
+          <span class="hd">Thời gian<span class="grip" data-col="ts"></span></span>
+          <span class="hd">Level<span class="grip" data-col="lv"></span></span>
+          <span class="hd">Thread<span class="grip" data-col="th"></span></span>
+          <span class="hd">Logger<span class="grip" data-col="lg"></span></span>
+          <span class="hd">Nội dung</span>
+        </div>
+      </div>
+      <div id="viewport" tabindex="0">
+        <div id="spacer"><div id="blocks"></div></div>
+      </div>
+    </div>
+    <aside id="json-panel" class="hidden">
+      <div class="jp-head">
+        <span class="jp-title">JSON</span>
+        <span id="jp-size" class="muted small"></span>
+        <span class="spacer"></span>
+        <div class="seg" id="jp-seg">
+          <button data-v="table">Bảng</button>
+          <button data-v="json">JSON</button>
+        </div>
+        <button id="jp-pin" title="Ghim panel (không đổi khi rê chuột qua đoạn khác)">Ghim</button>
+        <button id="jp-copy" title="Copy JSON gốc">Copy</button>
+        <button id="jp-close" class="close-x">✕</button>
+      </div>
+      <div id="jp-body"></div>
+      <div class="jp-hint muted small">Rê chuột vào đoạn <code>{...}</code> để xem nhanh · <b>bấm</b> vào đoạn để mở popup · kéo mép cột ở header để đổi độ rộng</div>
+    </aside>
+  </div>
+</main>
+
+<!-- POPUP JSON -->
+<div id="jmodal" class="overlay hidden">
+  <div class="jmodal-card">
+    <div class="jmh">
+      <span class="jp-title">JSON</span>
+      <span id="jm-size" class="muted small"></span>
+      <span class="spacer"></span>
+      <div class="seg" id="jm-seg">
+        <button data-v="table">Bảng</button>
+        <button data-v="json">JSON</button>
+      </div>
+      <button id="jm-copy">Copy</button>
+      <button id="jm-close" class="close-x">✕</button>
+    </div>
+    <div id="jm-body"></div>
+  </div>
+</div>
+
+<!-- MODAL CÀI ĐẶT -->
+<div id="modal-settings" class="overlay hidden">
+  <div class="card">
+    <div class="row spread"><h2>Cài đặt</h2><button class="close-x" data-close="modal-settings">✕</button></div>
+    <h3>MinIO Console</h3>
+    <label>URL chính (trang MinIO Console)
+      <input id="st-url" placeholder="https://minio.uongoc.vn" spellcheck="false">
+    </label>
+    <label>URL trang đăng nhập <span class="opt">(tùy chọn)</span>
+      <input id="st-login" placeholder="https://minio.uongoc.vn/login" spellcheck="false">
+    </label>
+    <label>Tên đăng nhập
+      <input id="st-user" autocomplete="username" spellcheck="false">
+    </label>
+    <label>Mật khẩu
+      <input id="st-pass" type="password" placeholder="(giữ nguyên nếu không đổi)" autocomplete="new-password">
+    </label>
+    <div class="fieldrow">
+      <label class="grow">Bucket chứa log
+        <input id="st-bucket" list="st-buckets" placeholder="accounting-file-logs" spellcheck="false">
+        <datalist id="st-buckets"></datalist>
+      </label>
+      <button id="st-buckets-btn" title="Đăng nhập và lấy danh sách bucket từ MinIO">Lấy danh sách</button>
+    </div>
+    <div class="row"><button id="st-test">Kiểm tra kết nối &amp; đăng nhập</button><span id="st-msg" class="msg"></span></div>
+    <h3>Bộ nhớ cache</h3>
+    <div class="fieldrow">
+      <label class="grow">Thư mục cache
+        <input id="st-cachedir" spellcheck="false">
+      </label>
+      <button id="st-pick" title="Mở dialog chọn thư mục của máy">Chọn thư mục...</button>
+    </div>
+    <label class="check"><input type="checkbox" id="st-keep"> Giữ lại file .tar.gz sau khi giải nén (tốn đĩa hơn)</label>
+    <label>Tự dọn cache cũ hơn (ngày, 0 = tắt) <input id="st-cleandays" type="number" min="0" max="3650" style="width:90px"></label>
+    <div class="row end"><button id="st-save" class="primary">Lưu cài đặt</button></div>
+    <p class="muted small" id="st-envpath"></p>
+  </div>
+</div>
+
+<!-- MODAL CACHE -->
+<div id="modal-cache" class="overlay hidden">
+  <div class="card wide">
+    <div class="row spread"><h2>Cache log đã tải</h2><button class="close-x" data-close="modal-cache">✕</button></div>
+    <p class="muted" id="cache-summary"></p>
+    <div class="row">
+      <button id="cache-open">Mở thư mục cache</button>
+      <button id="cache-clear" class="danger">Xóa toàn bộ cache</button>
+    </div>
+    <div id="cache-table"></div>
+  </div>
+</div>
+
+<div id="toast" class="hidden"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
