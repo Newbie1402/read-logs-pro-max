@@ -18,8 +18,36 @@ async function api(path, opts) {
   const r = await fetch(path, opts);
   let body = null;
   try { body = await r.json(); } catch (_) { /* empty */ }
+  if (r.status === 401 && body && body.auth === 'required') {
+    showGate();
+    throw new Error('Cần đăng nhập');
+  }
   if (!r.ok) throw new Error((body && body.error) || `HTTP ${r.status}`);
   return body;
+}
+
+// màn hình khóa truy cập (VPS mode)
+function showGate() {
+  $('gate').classList.remove('hidden');
+  $('gt-pass').focus();
+}
+
+async function gateLogin() {
+  const msg = $('gt-msg');
+  msg.className = 'msg';
+  msg.textContent = 'Đang kiểm tra…';
+  try {
+    const r = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: $('gt-pass').value }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || 'HTTP ' + r.status);
+    location.reload();
+  } catch (err) {
+    msg.textContent = err.message;
+  }
 }
 
 let toastTimer = 0;
@@ -61,7 +89,11 @@ const S = {
   currentJson: '',
   pendingJump: null,
   colw: null,        // {ln,ts,lv,th,lg}
+  scaleK: 1,         // hệ số co chiều cao khi quá ~20M px (tránh giới hạn trình duyệt)
+  segStart: 0,       // đoạn đang xem — viewport chia nhỏ session thành các đoạn SEG entry
+  segLock: 0,        // chống nhảy đoạn liên tục
 };
+const SEG = 300000; // số entry tối đa mỗi đoạn (giữ chiều cao scroll < ~14M px, an toàn mọi trình duyệt)
 
 // ---------- độ rộng cột ----------
 const COL_MIN = { ln: 34, ts: 80, lv: 34, th: 56, lg: 56 };
@@ -118,7 +150,13 @@ function initColumns() {
 }
 
 function total() { return S.mode === 'filter' ? (S.filterEntries ? S.filterEntries.length : 0) : (S.session ? S.session.total : 0); }
-function nBlocks() { return Math.ceil(total() / B); }
+// số entry của ĐOẠN đang xem (chế độ all) — không phải toàn bộ session
+function viewTotal() {
+  if (S.mode === 'filter') return S.filterEntries ? S.filterEntries.length : 0;
+  const t = S.session ? S.session.total : 0;
+  return Math.max(0, Math.min(t - S.segStart, SEG));
+}
+function nBlocks() { return Math.ceil(viewTotal() / B); }
 function entryAt(pos) {
   if (S.mode === 'filter') return S.filterEntries ? S.filterEntries[pos] : null;
   return S.entries.get(pos);
@@ -154,12 +192,16 @@ function ensureOffsets() {
   for (let i = 0; i < n; i++) off[i + 1] = off[i] + (S.heights[i] || estimateBlockH());
   S.offsets = off;
   S.offsetsDirty = false;
-  $('spacer').style.height = off[n] + 'px';
+  // trình duyệt giới hạn chiều cao phần tử ~33.5M px — nếu vượt thì co tỉ lệ
+  // lại (scrollbar vẫn linear, vị trí dòng được quy đổi khi cuộn/nhảy)
+  S.scaleK = off[n] > 20e6 ? 20e6 / off[n] : 1;
+  $('spacer').style.height = Math.round(off[n] * S.scaleK) + 'px';
 }
 
 function visibleBlocks() {
   const vp = $('viewport');
-  const y0 = vp.scrollTop, y1 = vp.scrollTop + vp.clientHeight;
+  const k = S.scaleK || 1;
+  const y0 = vp.scrollTop / k, y1 = (vp.scrollTop + vp.clientHeight) / k;
   ensureOffsets();
   let lo = 0, hi = nBlocks() - 1, b0 = 0, b1 = -1;
   // binary search block chứa y0
@@ -217,8 +259,10 @@ function render() {
 }
 
 function fillBlock(i, blk) {
-  const from = i * B;
-  const count = Math.min(B, total() - from);
+  // filter mode: từ đầu danh sách kết quả; all mode: offset theo đoạn đang xem
+  const base = S.mode === 'filter' ? 0 : S.segStart;
+  const from = base + i * B;
+  const count = Math.min(B, viewTotal() - i * B);
   if (count <= 0) return;
   // chế độ all: cần đủ entries trong map
   if (S.mode === 'all') {
@@ -258,7 +302,7 @@ function measure(blk, i) {
 
 function fetchWindow(i) {
   if (!S.session) return;
-  const from = i * B;
+  const from = S.segStart + i * B;
   const count = Math.min(B, S.session.total - from);
   if (count <= 0 || S.fetching.has(from)) return;
   S.fetching.add(from);
@@ -285,13 +329,13 @@ function handlePendingJump() {
   const pj = S.pendingJump;
   if (!pj) return;
   if (Date.now() > pj.until) { S.pendingJump = null; return; }
-  const b = Math.floor(pj.pos / B);
+  const b = Math.floor((pj.pos - S.segStart) / B);
   const blk = S.blocks.get(b);
   if (blk && blk.filled) {
     const el = blk.el.querySelector(`[data-pos="${pj.pos}"]`);
     if (el) {
       const vp = $('viewport');
-      const top = blk.el.offsetTop + el.offsetTop;
+      const top = (blk.el.offsetTop + el.offsetTop) * (S.scaleK || 1);
       vp.scrollTop = Math.max(0, top - 4);
       el.classList.add('flash');
       setTimeout(() => el.classList.remove('flash'), 1600);
@@ -301,18 +345,59 @@ function handlePendingJump() {
   }
   // block chưa sẵn sàng: giữ viewport bám gần target trong lúc chờ fetch
   ensureOffsets();
-  const target = S.offsets[b];
+  const target = S.offsets[b] * (S.scaleK || 1);
   const vp = $('viewport');
   if (Math.abs(vp.scrollTop - target) > 300) vp.scrollTop = Math.max(0, target - 4);
 }
 
+function setSegment(start) {
+  start = Math.max(0, start);
+  if (start === S.segStart) return;
+  S.segStart = start;
+  for (const [, blk] of S.blocks) blk.el.remove();
+  S.blocks.clear();
+  S.fetching.clear();
+  S.heights = new Array(nBlocks()).fill(estimateBlockH());
+  S.offsets = [];
+  S.offsetsDirty = true;
+  $('viewport').scrollTop = 0;
+  S.segLock = Date.now() + 500;
+  updateSessInfo();
+  scheduleRender();
+}
+
 function gotoPos(pos) {
   if (S.mode === 'filter') setMode('all');
-  const b = Math.floor(pos / B);
+  // pos nằm ngoài đoạn đang xem → chuyển đoạn trước
+  if (pos < S.segStart || pos >= S.segStart + SEG) {
+    setSegment(Math.floor(pos / SEG) * SEG);
+  }
+  const b = Math.floor((pos - S.segStart) / B);
   ensureOffsets();
-  $('viewport').scrollTop = Math.max(0, S.offsets[b] - 4);
+  $('viewport').scrollTop = Math.max(0, S.offsets[b] * (S.scaleK || 1) - 4);
   S.pendingJump = { pos, until: Date.now() + 5000 };
   scheduleRender();
+}
+
+// cuộn chạm mép đoạn → tự nạp đoạn kế tiếp (cảm giác cuộn liền mạch)
+function checkSegSwitch() {
+  if (S.mode !== 'all' || !S.session || S.pendingJump) return;
+  if (Date.now() < S.segLock) return;
+  const vp = $('viewport');
+  const t = S.session.total;
+  if (vp.scrollTop + vp.clientHeight >= vp.scrollHeight - 260) {
+    if (S.segStart + SEG < t) setSegment(S.segStart + SEG);
+  } else if (vp.scrollTop <= 260 && S.segStart > 0) {
+    const newStart = Math.max(0, S.segStart - SEG);
+    setSegment(newStart);
+    // đặt gần đáy đoạn mới để tiếp tục cuộn lên được liền
+    ensureOffsets();
+    requestAnimationFrame(() => {
+      ensureOffsets();
+      $('viewport').scrollTop = Math.max(0, (S.offsets[nBlocks()] || 0) - $('viewport').clientHeight - 40);
+      S.segLock = Date.now() + 400;
+    });
+  }
 }
 
 // ---------- render 1 entry ----------
@@ -561,7 +646,10 @@ function unpin() {
 function setMode(mode) {
   if (S.mode === mode) return;
   S.mode = mode;
-  if (mode === 'all') $('filter-bar').classList.add('hidden');
+  if (mode === 'all') {
+    $('filter-bar').classList.add('hidden');
+    S.segStart = 0;
+  }
   else if (S.filterLabel) $('filter-bar').classList.remove('hidden');
   resetViewData();
 }
@@ -586,15 +674,20 @@ function updateSessInfo() {
   const s = S.session;
   if (!s) { $('sess-info').textContent = ''; return; }
   const dates = [...new Set((s.files || []).map((f) => f.date))].filter((d) => d !== 'imported');
+  const seg = (S.mode === 'all' && s.total > SEG)
+    ? ` · đang xem ${ (S.segStart + 1).toLocaleString('vi-VN') }–${ Math.min(S.segStart + SEG, s.total).toLocaleString('vi-VN') }`
+    : '';
   $('sess-info').textContent =
     `${s.total.toLocaleString('vi-VN')} dòng log · ${s.fileCount} file (${fmtBytes(s.totalBytes)})` +
-    (dates.length ? ` · ${dates[0]}${dates.length > 1 ? ' → ' + dates[dates.length - 1] : ''}` : ' · file import local');
+    (dates.length ? ` · ${dates[0]}${dates.length > 1 ? ' → ' + dates[dates.length - 1] : ''}` : ' · file import local') +
+    seg;
 }
 
 async function openSession(id) {
   const info = await api(`/api/session/${id}/info`);
   S.session = info;
   S.mode = 'all';
+  S.segStart = 0;
   S.filterEntries = null;
   S.level = '';
   S.q = '';
@@ -734,6 +827,7 @@ function clearFilter() {
   S.filterEntries = null;
   S.level = '';
   S.q = '';
+  S.segStart = 0;
   document.querySelectorAll('#level-chips button').forEach((b) => b.classList.toggle('on', b.dataset.level === ''));
   $('filter-bar').classList.add('hidden');
   $('search').value = '';
@@ -968,7 +1062,7 @@ function wire() {
 
   // viewport
   const vp = $('viewport');
-  vp.addEventListener('scroll', () => { syncLogHead(); scheduleRender(); });
+  vp.addEventListener('scroll', () => { syncLogHead(); scheduleRender(); checkSegSwitch(); });
   window.addEventListener('resize', scheduleRender);
   vp.addEventListener('mouseover', (e) => {
     const ch = e.target.closest && e.target.closest('.jch');
@@ -1083,6 +1177,10 @@ function wire() {
     b.addEventListener('click', () => $(b.dataset.close).classList.add('hidden')));
   document.querySelectorAll('.overlay').forEach((o) =>
     o.addEventListener('click', (e) => { if (e.target === o) o.classList.add('hidden'); }));
+  // khóa truy cập VPS
+  $('gt-go').addEventListener('click', gateLogin);
+  $('gt-pass').addEventListener('keydown', (e) => { if (e.key === 'Enter') gateLogin(); });
+
   $('st-save').addEventListener('click', saveSettings);
   $('st-test').addEventListener('click', testConn);
   $('su-save').addEventListener('click', saveSetup);

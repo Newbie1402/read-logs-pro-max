@@ -3,7 +3,10 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -41,6 +44,7 @@ type App struct {
 	cfg      *config.Config
 	st       *store.Store
 	webFS    fs.FS
+	authPass string // APP_PASSWORD — rỗng = không khóa
 	mu       sync.Mutex
 	client   s3x.StorageClient
 	mode     string // "s3" | "console"
@@ -48,13 +52,13 @@ type App struct {
 	jobs     map[string]*Job
 }
 
-func New(cfg *config.Config, st *store.Store, webFS embed.FS) (*App, error) {
+func New(cfg *config.Config, st *store.Store, webFS embed.FS, authPass string) (*App, error) {
 	sub, err := fs.Sub(webFS, "web")
 	if err != nil {
 		return nil, err
 	}
 	app := &App{
-		cfg: cfg, st: st, webFS: sub,
+		cfg: cfg, st: st, webFS: sub, authPass: authPass,
 		sessions: map[string]*logs.Session{},
 		jobs:     map[string]*Job{},
 	}
@@ -160,6 +164,7 @@ func readBody(w http.ResponseWriter, r *http.Request, v any) bool {
 func (a *App) Routes() http.Handler {
 	mux := http.NewServeMux()
 
+	mux.HandleFunc("POST /api/login", a.handleLogin)
 	mux.HandleFunc("GET /api/state", a.handleState)
 	mux.HandleFunc("POST /api/config", a.handleSaveConfig)
 	mux.HandleFunc("POST /api/settings", a.handleSaveSettings)
@@ -182,7 +187,71 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/import-upload", a.handleImportUpload)
 
 	mux.Handle("GET /", http.FileServerFS(a.webFS))
-	return mux
+	return a.authGate(mux)
+}
+
+// ---------- auth gate (VPS mode) ----------
+
+const authCookie = "lvsess"
+
+func sessionToken(pass string) string {
+	h := sha256.Sum256([]byte("logviewer:" + pass))
+	return hex.EncodeToString(h[:])
+}
+
+// authGate: nếu đặt APP_PASSWORD, mọi request (trừ /api/login và file tĩnh của trang
+// đăng nhập) phải mang cookie phiên hợp lệ. Trang tĩnh vẫn được trả để app tự hiện
+// màn hình nhập mật khẩu khi gọi API gặp 401.
+func (a *App) authGate(next http.Handler) http.Handler {
+	if a.authPass == "" {
+		return next
+	}
+	want := sessionToken(a.authPass)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ck, err := r.Cookie(authCookie); err == nil && subtle.ConstantTimeCompare([]byte(ck.Value), []byte(want)) == 1 {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if r.URL.Path == "/api/login" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Cần đăng nhập", "auth": "required"})
+			return
+		}
+		// trang tĩnh: vẫn trả về để SPA tự chuyển sang màn hình khóa
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if a.authPass == "" {
+		writeJSON(w, 200, map[string]bool{"ok": true})
+		return
+	}
+	var body struct {
+		Password string `json:"password"`
+	}
+	if !readBody(w, r, &body) {
+		return
+	}
+	if subtle.ConstantTimeCompare([]byte(body.Password), []byte(a.authPass)) != 1 {
+		time.Sleep(600 * time.Millisecond) // chậm tay kẻ dò mật khẩu
+		fail(w, 401, fmt.Errorf("mật khẩu không đúng"))
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     authCookie,
+		Value:    sessionToken(a.authPass),
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   86400 * 30,
+	})
+	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
 func (a *App) handleState(w http.ResponseWriter, r *http.Request) {
@@ -585,7 +654,7 @@ func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if m, err := strconv.Atoi(r.URL.Query().Get("max")); err == nil && m > 0 && m <= 100000 {
 		max = m
 	}
-	matches, total, truncated, err := s.Search(q, level, max)
+	matches, total, truncated, err := s.Search(q, level, max, r.Context())
 	if err != nil {
 		fail(w, 500, err)
 		return

@@ -37,6 +37,21 @@
   </div>
 </div>
 
+<!-- KHÓA TRUY CẬP (VPS mode) -->
+<div id="gate" class="overlay hidden">
+  <div class="card setup-card">
+    <h1>Log Viewer</h1>
+    <p class="muted">Trang này được bảo vệ — nhập mật khẩu truy cập (đặt ở biến <code>APP_PASSWORD</code> trên server).</p>
+    <label>Mật khẩu truy cập
+      <input id="gt-pass" type="password" autocomplete="current-password">
+    </label>
+    <div class="row">
+      <button id="gt-go" class="primary">Vào xem logs</button>
+      <span id="gt-msg" class="msg"></span>
+    </div>
+  </div>
+</div>
+
 <header>
   <div class="brand">Log Viewer <span id="bucket-badge" class="badge hidden"></span></div>
   <div class="spacer"></div>

@@ -1,0 +1,32 @@
+# Log Viewer — systemd service cho VPS
+# Cài đặt:
+#   1. Tải binary + .env vào /opt/logviewer/
+#   2. cp deploy/logviewer.service /etc/systemd/system/
+#   3. systemctl daemon-reload && systemctl enable --now logviewer
+[Unit]
+Description=Log Viewer - doc log MinIO
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# nen tao user rieng de chay, khong dung root:
+#   useradd -r -s /usr/sbin/nologin logviewer && chown -R logviewer:logviewer /opt/logviewer
+User=logviewer
+Group=logviewer
+WorkingDirectory=/opt/logviewer
+ExecStart=/opt/logviewer/LogViewer-linux-amd64 -host 0.0.0.0 -port 8765
+Restart=on-failure
+RestartSec=3
+
+# gioi han tai nguyen de app khong an khong kiem soat
+MemoryMax=1G
+Nice=5
+
+# hardening co ban
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

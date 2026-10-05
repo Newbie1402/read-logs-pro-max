@@ -28,12 +28,16 @@ var webFS embed.FS
 func main() {
 	log.SetFlags(log.Ltime)
 	portFlag := flag.String("port", "", "port HTTP (mặc định: PORT trong .env hoặc 8765)")
+	hostFlag := flag.String("host", "", "địa chỉ bind (mặc định: HOST trong .env hoặc 127.0.0.1; VPS dùng 0.0.0.0)")
 	noOpen := flag.Bool("no-open", false, "không tự mở trình duyệt")
 	flag.Parse()
 
 	cfg := config.Load()
 	if *portFlag != "" {
 		cfg.Port = *portFlag
+	}
+	if *hostFlag != "" {
+		cfg.Host = *hostFlag
 	}
 	st, err := store.New(cfg.CacheDir)
 	if err != nil {
@@ -44,12 +48,12 @@ func main() {
 		log.Printf("[cache] tự dọn %d thư mục cũ hơn %d ngày", n, cfg.AutoCleanDays)
 	}
 
-	app, err := server.New(cfg, st, webFS)
+	app, err := server.New(cfg, st, webFS, cfg.AppPassword)
 	if err != nil {
 		log.Fatalf("khởi tạo app lỗi: %v", err)
 	}
 
-	addr := net.JoinHostPort("127.0.0.1", cfg.Port)
+	addr := net.JoinHostPort(cfg.Host, cfg.Port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		log.Fatalf("không mở được cổng %s: %v", cfg.Port, err)
@@ -59,12 +63,17 @@ func main() {
 	url := fmt.Sprintf("http://localhost:%s", cfg.Port)
 	fmt.Printf("╔══════════════════════════════════════════╗\n")
 	fmt.Printf("║  Log Viewer %s\n", server.Version)
-	fmt.Printf("║  Đang chạy tại: %s\n", url)
+	if cfg.Host == "0.0.0.0" || cfg.Host == "" {
+		fmt.Printf("║  Lắng nghe:     0.0.0.0:%s (mọi mạng)\n", cfg.Port)
+	} else {
+		fmt.Printf("║  Đang chạy tại: %s\n", url)
+	}
+	fmt.Printf("║  Khóa truy cập: %s\n", map[bool]string{true: "BẬT (APP_PASSWORD)", false: "không"}[cfg.AppPassword != ""])
 	fmt.Printf("║  Cache:        %s\n", cfg.CacheDir)
 	fmt.Printf("║  Dừng app:     Ctrl+C  (cache giữ nguyên để lần sau mở nhanh)\n")
 	fmt.Printf("╚══════════════════════════════════════════╝\n")
 
-	if !*noOpen {
+	if !*noOpen && (cfg.Host == "127.0.0.1" || cfg.Host == "localhost") {
 		go func() {
 			time.Sleep(400 * time.Millisecond)
 			openBrowser(url)

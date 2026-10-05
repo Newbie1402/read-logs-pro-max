@@ -20,6 +20,8 @@ const (
 	KeyBucket     = "MINIO_BANK_TRANSACTION_BUCKET"
 	KeyCacheDir   = "CACHE_DIR"
 	KeyPort       = "PORT"
+	KeyHost       = "HOST"          // địa chỉ bind: mặc định 127.0.0.1; VPS đặt 0.0.0.0
+	KeyAppPass    = "APP_PASSWORD"  // mật khẩu truy cập web (VPS mode; trống = không khóa)
 	KeyKeepArch   = "KEEP_ARCHIVES"   // "true" = giữ file .tar.gz sau khi giải nén
 	KeyCleanDays  = "AUTO_CLEAN_DAYS" // tự xóa cache cũ hơn N ngày (0 = tắt)
 
@@ -37,6 +39,8 @@ type Config struct {
 	Bucket        string
 	CacheDir      string
 	Port          string
+	Host          string
+	AppPassword   string
 	KeepArchives  bool
 	AutoCleanDays int
 
@@ -71,7 +75,7 @@ func Load() *Config {
 	keys := []string{
 		KeyMinioURL, KeyConsoleURL, KeyLoginURL, KeyUsername, KeyPassword, KeyBucket,
 		KeyAccessKey, KeySecretKey,
-		KeyCacheDir, KeyPort, KeyKeepArch, KeyCleanDays,
+		KeyCacheDir, KeyPort, KeyHost, KeyAppPass, KeyKeepArch, KeyCleanDays,
 	}
 	for _, k := range keys {
 		vals[k] = os.Getenv(k)
@@ -89,6 +93,8 @@ func Load() *Config {
 	c.Bucket = strings.TrimSpace(vals[KeyBucket])
 	c.CacheDir = strings.TrimSpace(vals[KeyCacheDir])
 	c.Port = firstNonEmpty(strings.TrimSpace(vals[KeyPort]), "8765")
+	c.Host = firstNonEmpty(strings.TrimSpace(vals[KeyHost]), "127.0.0.1")
+	c.AppPassword = strings.TrimSpace(vals[KeyAppPass])
 	c.KeepArchives = strings.EqualFold(strings.TrimSpace(vals[KeyKeepArch]), "true")
 	c.AutoCleanDays = atoiOr(vals[KeyCleanDays], 14)
 	if c.CacheDir == "" {
@@ -145,7 +151,7 @@ func (c *Config) Save(fields map[string]string) error {
 			seen[k] = true
 		}
 	}
-	auxKeys := []string{KeyPort, KeyCacheDir, KeyKeepArch, KeyCleanDays}
+	auxKeys := []string{KeyPort, KeyHost, KeyAppPass, KeyCacheDir, KeyKeepArch, KeyCleanDays}
 	wroteAux := false
 	for _, k := range auxKeys {
 		if v, ok := existing[k]; ok {

@@ -2,6 +2,7 @@ package logs
 
 import (
 	"bufio"
+	"context"
 	"io"
 	"os"
 	"strings"
@@ -263,6 +264,172 @@ func Search(ix *FileIndex, q, level string, cb func(local int64, e Entry) bool) 
 	return nil
 }
 
+// ---------- search nhanh cho file lớn (hàng triệu dòng) ----------
+
+func lowerByte(c byte) byte {
+	if c >= 'A' && c <= 'Z' {
+		return c + 32
+	}
+	return c
+}
+
+// containsFold: chứa sub (không phân biệt hoa thường ASCII), KHÔNG cấp phát.
+// Dò byte đầu bằng IndexByte (SIMD) rồi so phần còn lại — nhanh gấp nhiều lần
+// so với strings.Contains(strings.ToLower(s)) vốn cấp phát cho từng dòng.
+func containsFold(s, sub string) bool {
+	if sub == "" {
+		return true
+	}
+	n := len(sub)
+	if n > len(s) {
+		return false
+	}
+	l0, u0 := lowerByte(sub[0]), upperByte(sub[0])
+	for i := 0; i+n <= len(s); {
+		j := -1
+		if l0 != u0 {
+			jl := strings.IndexByte(s[i:], l0)
+			ju := strings.IndexByte(s[i:], u0)
+			switch {
+			case jl < 0:
+				j = ju
+			case ju < 0:
+				j = jl
+			case jl < ju:
+				j = jl
+			default:
+				j = ju
+			}
+		} else {
+			j = strings.IndexByte(s[i:], l0)
+		}
+		if j < 0 || i+j+n > len(s) {
+			return false
+		}
+		if foldEq(s[i+j:i+j+n], sub) {
+			return true
+		}
+		i += j + 1
+	}
+	return false
+}
+
+func upperByte(c byte) byte {
+	if c >= 'a' && c <= 'z' {
+		return c - 32
+	}
+	return c
+}
+
+func foldEq(a, b string) bool {
+	for k := 0; k < len(b); k++ {
+		if lowerByte(a[k]) != lowerByte(b[k]) {
+			return false
+		}
+	}
+	return true
+}
+
+// SearchScan: quét tối ưu — kiểm tra khớp theo từng dòng thô (không cấp phát),
+// chỉ build Entry khi entry thực sự khớp; Raw để rỗng (kết quả search gọn,
+// nội dung đầy đủ fetch sau qua /entries). ctx cho phép hủy giữa chừng.
+func SearchScan(ix *FileIndex, q, level string, ctx context.Context, cb func(local int64, e Entry) bool) error {
+	er, err := openEntryReader(ix, 0)
+	if err != nil {
+		return err
+	}
+	defer er.Close()
+
+	wantLevel := strings.ToUpper(level)
+	mustLv := wantLevel != "" && wantLevel != "ALL"
+	qLower := strings.ToLower(q)
+	mustQ := qLower != ""
+
+	var buf []string // dòng của entry đang mở (tái sử dụng)
+	lvOK := false
+	qOK := false
+	started := false // entry hiện tại có bắt đầu bằng dòng header hay không
+	local := int64(0)
+
+	flush := func() bool {
+		if len(buf) > 0 && started {
+			if (lvOK || !mustLv) && (qOK || !mustQ) {
+				e := buildEntry(buf)
+				if !cb(local, e) {
+					return false
+				}
+			}
+			local++
+		}
+		buf = buf[:0]
+		started = false
+		lvOK = false
+		qOK = false
+		return true
+	}
+
+	for {
+		if local&1023 == 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+		}
+		line, ok := er.nextLine()
+		if ok && IsStart(line) {
+			if len(buf) > 0 {
+				if !flush() {
+					return nil
+				}
+			}
+			buf = append(buf, line)
+			started = true
+			if mustLv {
+				_, lv, _, _, _, _, okh := ParseHeader(line)
+				lvOK = okh && lv == wantLevel
+			}
+			if mustQ {
+				qOK = containsFold(line, qLower)
+			}
+		} else if ok {
+			if started {
+				buf = append(buf, line)
+				if mustQ && !qOK {
+					qOK = containsFold(line, qLower)
+				}
+			}
+			// dòng rác trước entry đầu tiên: bỏ qua
+		}
+		if !ok {
+			if !flush() {
+				return nil
+			}
+			return nil
+		}
+	}
+}
+
+// buildEntry: entry từ các dòng đã thu thập (chỉ gọi khi entry khớp).
+// Raw rỗng — dùng cho kết quả search (payload gọn); hiển thị chỉ cần Msg.
+func buildEntry(lines []string) Entry {
+	header := lines[0]
+	ts, level, _, thread, logger, msg, ok := ParseHeader(header)
+	var disp string
+	if ok {
+		var b strings.Builder
+		b.WriteString(msg)
+		for _, l := range lines[1:] {
+			b.WriteByte('\n')
+			b.WriteString(l)
+		}
+		disp = b.String()
+	} else {
+		disp = strings.Join(lines, "\n")
+	}
+	return Entry{TS: ts, Level: level, Thread: thread, Logger: logger, Msg: disp}
+}
+
 // Session: tập nhiều file đã gộp, sắp xếp theo (date, hour, tên file).
 type Session struct {
 	ID         string
@@ -327,11 +494,13 @@ func (s *Session) Read(from, count int64) []Entry {
 }
 
 // Search toàn session; trả về tối đa maxResult entry khớp (kèm nội dung) + tổng số khớp.
-func (s *Session) Search(q, level string, maxResult int) (matches []Entry, total int64, truncated bool, err error) {
+// Dùng SearchScan (quét nhanh không cấp phát cho từng dòng) — Raw rỗng để payload gọn;
+// nội dung đầy đủ của dòng nào cần copy thì fetch riêng qua /entries.
+func (s *Session) Search(q, level string, maxResult int, ctx context.Context) (matches []Entry, total int64, truncated bool, err error) {
 	matches = []Entry{}
 	for fi, f := range s.Files {
 		base := s.Cut[fi]
-		err = Search(f, q, level, func(local int64, e Entry) bool {
+		err = SearchScan(f, q, level, ctx, func(local int64, e Entry) bool {
 			total++
 			if int64(len(matches)) < int64(maxResult) {
 				e.Idx = base + local

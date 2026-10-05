@@ -123,6 +123,93 @@ Mọi thứ xóa được an toàn trong app — file gốc trên MinIO không b
 
 ---
 
+---
+
+## Deploy lên VPS (cho cả team dùng chung)
+
+Nhánh `vps-deploy` chứa bản tối ưu cho chạy nền web: bind ngoài + khóa bằng mật khẩu + build Linux.
+
+### 1. Build & đẩy file lên server
+
+```sh
+git checkout vps-deploy
+./build.sh          # có thêm LogViewer-linux-amd64 / -arm64 trong dist/
+```
+
+Copy 2 file lên VPS (thay IP của bạn):
+
+```sh
+scp dist/LogViewer-linux-amd64 deploy/logviewer.service root@<IP-VPS>:/tmp/
+ssh root@<IP-VPS> "
+  mkdir -p /opt/logviewer && mv /tmp/LogViewer-linux-amd64 /opt/logviewer/ &&
+  useradd -r -s /usr/sbin/nologin logviewer 2>/dev/null;
+  cp /tmp/logviewer.service /etc/systemd/system/ && nano /opt/logviewer/.env
+"
+```
+
+### 2. File `.env` trên VPS
+
+```env
+MINIO_CONSOLE_URL=https://minio.uongoc.vn
+MINIO_LOGIN_URL=https://minio.uongoc.vn/login
+MINIO_USERNAME=xxxx
+MINIO_PASSWORD=xxxx
+MINIO_BANK_TRANSACTION_BUCKET=accounting-file-logs
+
+HOST=0.0.0.0          # cho phép truy cập từ ngoài
+APP_PASSWORD=matkhau-team   # BẮT BUỘC đặt khi để public
+AUTO_CLEAN_DAYS=14
+```
+
+### 3. Chạy như service
+
+```sh
+chmod +x /opt/logviewer/LogViewer-linux-amd64
+chown -R logviewer:logviewer /opt/logviewer
+systemctl daemon-reload
+systemctl enable --now logviewer
+journalctl -u logviewer -f     # xem log app
+```
+
+App chạy ở cổng 8765. Đặt nginx phía trước để có HTTPS + domain:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name logs.uongoc.vn;
+    # ssl_certificate ...; ssl_certificate_key ...;
+
+    location / {
+        proxy_pass http://127.0.0.1:8765;
+        proxy_set_header Host $host;
+        proxy_read_timeout 300s;    # tải archive lớn
+        proxy_buffering off;        # stream log mượt hơn
+    }
+}
+```
+
+> **Bảo mật**: `APP_PASSWORD` khóa toàn bộ API (ai không có mật khẩu chỉ thấy trang nhập khẩu). Cookie phiên sống 30 ngày. Nếu chỉ dùng nội bộ qua VPN/WireGuard thì vẫn nên đặt để chặn scan bừa.
+
+### 4. Hiệu năng với log lớn (đã tối ưu sẵn)
+
+- Trình đọc **virtualized + phân đoạn**: trình duyệt chỉ render ~300 dòng đang nhìn; session lớn chia thành đoạn 300.000 dòng, cuộn tới đáy tự nạp đoạn kế — chiều cao cuộn luôn dưới giới hạn của mọi trình duyệt (Firefox/Safari chỉ chịu ~17M px).
+- **Tìm kiếm** quét ~300MB/1 triệu dòng bằng thuật toán không cấp phát từng dòng, trả về tối đa 20.000 kết quả dạng gọn — server ăn ít RAM, không nghẽn GC.
+- Index theo block 64KB: đọc dòng bất kỳ là seek + quét cục bộ, không load nguyên file vào RAM.
+- Cache trên đĩa, giới hạn `MemoryMax=1G` trong systemd đề phòng.
+
+Số liệu đo thực tế (Mac M1, **1.000.000 dòng / 210MB text / 17MB nén**):
+
+| Thao tác | Kết quả |
+|---|---|
+| Giải nén + index | **0.39s** |
+| Đọc 50 dòng tại vị trí bất kỳ | ~1.3ms |
+| Tìm từ khóa quét hết 1 triệu dòng | **0.12–0.2s** |
+| Tìm theo level (55.556 khớp, trả 20.000) | 0.21s |
+| RAM server (sau index + nhiều lần search) | 60–105 MB |
+| DOM trình duyệt khi cuộn 1 triệu dòng | ~300 dòng (không tăng) |
+
+---
+
 ## Build từ nguồn
 
 Yêu cầu: Go >= 1.22 (`brew install go`).
