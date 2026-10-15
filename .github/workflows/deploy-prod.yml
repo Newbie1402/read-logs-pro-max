@@ -84,11 +84,27 @@ jobs:
           chmod 600 "$HOME/.ssh/known_hosts"
 
       # Connect before the first SSH/SCP command; DEPLOY_HOST should be the VPS Tailscale IP.
+      - name: Install Tailscale
+        run: curl -fsSL https://tailscale.com/install.sh | sh
+
       - name: Connect to Tailscale
-        uses: tailscale/github-action@v2
-        with:
-          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
-          version: stable
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+        run: |
+          set -euo pipefail
+          test -n "$TAILSCALE_AUTHKEY"
+          sudo tailscaled --state=mem: &
+          tailscaled_pid=$!
+          trap 'sudo kill "$tailscaled_pid" >/dev/null 2>&1 || true' EXIT
+
+          for _ in $(seq 1 30); do
+            if sudo tailscale status >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+
+          sudo tailscale up --authkey="$TAILSCALE_AUTHKEY" --accept-routes
 
       - name: Upload Swarm stack definition
         shell: bash
