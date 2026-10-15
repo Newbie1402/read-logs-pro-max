@@ -273,6 +273,8 @@ deploy bằng workflow, VPS tự pull image từ GHCR rồi Docker Compose plugi
 manager cần có lệnh `docker compose` (không chỉ `docker stack`). Nếu dùng
 Tailscale, đặt `DEPLOY_HOST` là IP Tailscale của Swarm manager và cho phép SSH
 qua tailnet; workflow sẽ kết nối Tailscale trước lệnh SSH/SCP đầu tiên.
+Production build hiện target `linux/amd64` để phù hợp với Intel M720q và tránh
+chi phí emulation ARM trong GitHub Actions.
 
 Không cần chạy lệnh deploy thủ công; chỉ cần merge code từ `dev` vào `prod`.
 
