@@ -137,11 +137,17 @@ jobs:
           set -eu
           trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
 
-          docker compose version >/dev/null
+          stack_image_repository="$IMAGE_REPOSITORY"
+          stack_image_tag="$IMAGE_TAG"
+          set -a
+          . "$VPS_ENV_FILE"
+          set +a
+          export IMAGE_REPOSITORY="$stack_image_repository"
+          export IMAGE_TAG="$stack_image_tag"
+
           docker pull "${IMAGE_REPOSITORY}:${IMAGE_TAG}"
-          docker compose --env-file "$VPS_ENV_FILE" --file "$VPS_STACK_FILE" config |
-            docker stack deploy --with-registry-auth --resolve-image always --prune \
-              --compose-file - logviewer
+          docker stack deploy --with-registry-auth --resolve-image always --prune \
+            --compose-file "$VPS_STACK_FILE" logviewer
           docker service ls --filter name=logviewer_logviewer
           docker service ps --no-trunc --filter desired-state=running logviewer_logviewer
           REMOTE
