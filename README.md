@@ -233,11 +233,11 @@ Tạo GitHub Environment `production` và các secrets sau:
 | `DEPLOY_USER` | User SSH có quyền dùng Docker |
 | `DEPLOY_SSH_KEY` | Private key deploy |
 | `DEPLOY_KNOWN_HOSTS` | Kết quả `ssh-keyscan -H <host>` |
-| `DEPLOY_ENV` | Nội dung file `.env` production, không commit vào repo |
 | `GHCR_USERNAME` | User GitHub/PAT owner package |
 | `GHCR_TOKEN` | PAT có quyền đọc package GHCR trên VPS |
 
-`DEPLOY_ENV` tối thiểu nên có:
+GitHub Actions không lưu, upload hoặc ghi đè `.env`. Hãy tạo file cố định trên
+VPS tại `/opt/logviewer/data/.env` trước lần deploy đầu tiên:
 
 ```env
 HOST=0.0.0.0
@@ -252,17 +252,24 @@ AUTO_CLEAN_DAYS=14
 KEEP_ARCHIVES=false
 ```
 
+Phân quyền file cấu hình:
+
+```sh
+sudo mkdir -p /opt/logviewer/data
+sudo chmod 700 /opt/logviewer/data
+sudo chmod 600 /opt/logviewer/data/.env
+```
+
 Stack dùng bind mount `/opt/logviewer/data:/data`, nên cache, `.env` và config
 được giữ nguyên qua mọi lần deploy/rollback trên VPS. Service chỉ chạy một
 replica trên manager vì cache hiện là dữ liệu local; log container được Docker
 rotate ở mức 10 MB/file, giữ 5 file. Healthcheck dùng `/healthz`, còn
 `APP_PASSWORD` vẫn bảo vệ toàn bộ API nghiệp vụ.
 
-Stack Swarm truyền trực tiếp các biến `MINIO_*`, `APP_PASSWORD` và các biến cấu
-hình khác từ Environment của Portainer/GitHub vào container. Khi deploy bằng
-workflow, Docker Compose plugin trên Swarm manager đọc `/opt/logviewer/data/.env`
-để render stack trước khi đưa vào Swarm; vì vậy máy manager cần có lệnh
-`docker compose` (không chỉ `docker stack`).
+Stack Swarm truyền các biến từ file `.env` cố định trên VPS vào container. Khi
+deploy bằng workflow, VPS tự pull image từ GHCR rồi Docker Compose plugin đọc
+`/opt/logviewer/data/.env` để render stack trước khi đưa vào Swarm; vì vậy máy
+manager cần có lệnh `docker compose` (không chỉ `docker stack`).
 
 Không cần chạy lệnh deploy thủ công; chỉ cần merge code từ `dev` vào `prod`.
 
