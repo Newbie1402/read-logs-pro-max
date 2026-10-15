@@ -16,7 +16,7 @@ services:
       AUTO_CLEAN_DAYS: ${AUTO_CLEAN_DAYS:-14}
     ports:
       - target: 8765
-        published: ${LOGVIEWER_PORT:-8765}
+        published: 8765
         protocol: tcp
         mode: ingress
     volumes:
