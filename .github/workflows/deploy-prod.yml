@@ -52,7 +52,8 @@ jobs:
         with:
           context: .
           push: true
-          platforms: linux/amd64,linux/arm64
+          # Production VPS is an Intel M720q; avoid slow ARM emulation in CI.
+          platforms: linux/amd64
           tags: |
             ${{ steps.image.outputs.name }}:sha-${{ github.sha }}
             ${{ steps.image.outputs.name }}:prod
@@ -93,18 +94,13 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$TAILSCALE_AUTHKEY"
-          sudo tailscaled --state=mem: &
-          tailscaled_pid=$!
-          trap 'sudo kill "$tailscaled_pid" >/dev/null 2>&1 || true' EXIT
+          if ! sudo tailscale status >/dev/null 2>&1; then
+            sudo systemctl start tailscaled || sudo tailscaled --state=mem: &
+            sleep 3
+          fi
 
-          for _ in $(seq 1 30); do
-            if sudo tailscale status >/dev/null 2>&1; then
-              break
-            fi
-            sleep 1
-          done
-
-          sudo tailscale up --authkey="$TAILSCALE_AUTHKEY" --accept-routes
+          sudo tailscale up --authkey="$TAILSCALE_AUTHKEY" --accept-routes --reset
+          sudo tailscale status
 
       - name: Upload Swarm stack definition
         shell: bash
