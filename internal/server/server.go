@@ -164,6 +164,7 @@ func readBody(w http.ResponseWriter, r *http.Request, v any) bool {
 func (a *App) Routes() http.Handler {
 	mux := http.NewServeMux()
 
+	mux.HandleFunc("GET /healthz", handleHealth)
 	mux.HandleFunc("POST /api/login", a.handleLogin)
 	mux.HandleFunc("GET /api/state", a.handleState)
 	mux.HandleFunc("POST /api/config", a.handleSaveConfig)
@@ -216,6 +217,10 @@ func (a *App) authGate(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		if r.URL.Path == "/healthz" {
+			handleHealth(w, r)
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			w.WriteHeader(http.StatusUnauthorized)
@@ -225,6 +230,11 @@ func (a *App) authGate(next http.Handler) http.Handler {
 		// trang tĩnh: vẫn trả về để SPA tự chuyển sang màn hình khóa
 		next.ServeHTTP(w, r)
 	})
+}
+
+func handleHealth(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok\n"))
 }
 
 func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {

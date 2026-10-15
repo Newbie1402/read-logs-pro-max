@@ -1,0 +1,22 @@
+services:
+  logviewer:
+    build:
+      context: .
+    image: readlogs-logviewer:local
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8765
+      CACHE_DIR: /data/log-cache
+    ports:
+      - "${LOGVIEWER_PORT:-8765}:8765"
+    volumes:
+      - logviewer-data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+
+volumes:
+  logviewer-data:

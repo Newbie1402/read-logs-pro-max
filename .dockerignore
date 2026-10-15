@@ -1,0 +1,11 @@
+.git
+.idea
+.env
+.env.*
+dist
+log-cache
+runtime
+*.log
+*.part
+*.tmp
+.DS_Store

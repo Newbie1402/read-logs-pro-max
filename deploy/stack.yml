@@ -1,0 +1,56 @@
+services:
+  logviewer:
+    image: ${IMAGE_REPOSITORY}:${IMAGE_TAG}
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8765
+      CACHE_DIR: /data/log-cache
+    ports:
+      - target: 8765
+        published: ${LOGVIEWER_PORT:-8765}
+        protocol: tcp
+        mode: ingress
+    volumes:
+      - type: bind
+        source: /opt/logviewer/data
+        target: /data
+    networks:
+      - logviewer
+    deploy:
+      replicas: 1
+      endpoint_mode: vip
+      placement:
+        constraints:
+          - node.role == manager
+      update_config:
+        parallelism: 1
+        delay: 10s
+        monitor: 30s
+        failure_action: rollback
+        order: stop-first
+      rollback_config:
+        parallelism: 1
+        monitor: 30s
+        order: stop-first
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 60s
+      resources:
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+        limits:
+          cpus: "1.00"
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+
+networks:
+  logviewer:
+    driver: overlay
+    attachable: true
