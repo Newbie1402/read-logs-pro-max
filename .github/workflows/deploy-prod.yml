@@ -122,7 +122,10 @@ jobs:
           printf '%s' "$GHCR_TOKEN" | ssh "$target" \
             "docker login ${REGISTRY} --username '${GHCR_USERNAME}' --password-stdin"
           ssh "$target" \
-            "IMAGE_REPOSITORY='${IMAGE_REPOSITORY}' IMAGE_TAG='${IMAGE_TAG}' \
+            "docker compose version >/dev/null && \
+             IMAGE_REPOSITORY='${IMAGE_REPOSITORY}' IMAGE_TAG='${IMAGE_TAG}' \
+             docker compose --env-file /opt/logviewer/data/.env \
+             --file /opt/logviewer/stack.yml config | \
              docker stack deploy --with-registry-auth --prune \
-             --compose-file /opt/logviewer/stack.yml logviewer"
+             --compose-file - logviewer"
           ssh "$target" 'docker service ls --filter name=logviewer_logviewer'

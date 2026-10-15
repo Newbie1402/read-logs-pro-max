@@ -4,10 +4,12 @@ services:
       context: .
     image: readlogs-logviewer:local
     restart: unless-stopped
+    env_file:
+      - ${APP_ENV_FILE:-.env}
     environment:
-      HOST: 0.0.0.0
-      PORT: 8765
-      CACHE_DIR: /data/log-cache
+      HOST: ${HOST:-0.0.0.0}
+      PORT: ${PORT:-8765}
+      CACHE_DIR: ${CACHE_DIR:-/data/log-cache}
     ports:
       - "${LOGVIEWER_PORT:-8765}:8765"
     volumes:

@@ -2,9 +2,18 @@ services:
   logviewer:
     image: ${IMAGE_REPOSITORY}:${IMAGE_TAG}
     environment:
-      HOST: 0.0.0.0
-      PORT: 8765
-      CACHE_DIR: /data/log-cache
+      HOST: ${HOST:-0.0.0.0}
+      PORT: ${PORT:-8765}
+      CACHE_DIR: ${CACHE_DIR:-/data/log-cache}
+      MINIO_URL: ${MINIO_URL:-}
+      MINIO_CONSOLE_URL: ${MINIO_CONSOLE_URL:-}
+      MINIO_LOGIN_URL: ${MINIO_LOGIN_URL:-}
+      MINIO_USERNAME: ${MINIO_USERNAME:-}
+      MINIO_PASSWORD: ${MINIO_PASSWORD:-}
+      MINIO_BANK_TRANSACTION_BUCKET: ${MINIO_BANK_TRANSACTION_BUCKET:-}
+      APP_PASSWORD: ${APP_PASSWORD:-}
+      KEEP_ARCHIVES: ${KEEP_ARCHIVES:-false}
+      AUTO_CLEAN_DAYS: ${AUTO_CLEAN_DAYS:-14}
     ports:
       - target: 8765
         published: ${LOGVIEWER_PORT:-8765}

@@ -54,7 +54,7 @@ jobs:
 
       - name: Validate Compose files
         run: |
-          docker compose --env-file .env.example config >/dev/null
+          APP_ENV_FILE=.env.example docker compose --env-file .env.example config >/dev/null
           IMAGE_REPOSITORY=example.invalid/read-logs IMAGE_TAG=ci \
             docker stack config --compose-file deploy/stack.yml >/dev/null
 

@@ -258,6 +258,12 @@ replica trên manager vì cache hiện là dữ liệu local; log container đư
 rotate ở mức 10 MB/file, giữ 5 file. Healthcheck dùng `/healthz`, còn
 `APP_PASSWORD` vẫn bảo vệ toàn bộ API nghiệp vụ.
 
+Stack Swarm truyền trực tiếp các biến `MINIO_*`, `APP_PASSWORD` và các biến cấu
+hình khác từ Environment của Portainer/GitHub vào container. Khi deploy bằng
+workflow, Docker Compose plugin trên Swarm manager đọc `/opt/logviewer/data/.env`
+để render stack trước khi đưa vào Swarm; vì vậy máy manager cần có lệnh
+`docker compose` (không chỉ `docker stack`).
+
 Không cần chạy lệnh deploy thủ công; chỉ cần merge code từ `dev` vào `prod`.
 
 ### 4. Hiệu năng với log lớn (đã tối ưu sẵn)
