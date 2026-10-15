@@ -1,0 +1,128 @@
+name: Deploy production
+
+on:
+  push:
+    branches:
+      - prod
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  DEPLOY_ROOT: /opt/logviewer
+  VPS_ENV_FILE: /opt/logviewer/data/.env
+  VPS_STACK_FILE: /opt/logviewer/stack.yml
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.image.outputs.name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve image name
+        id: image
+        shell: bash
+        run: echo "name=${REGISTRY}/$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push immutable image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ steps.image.outputs.name }}:sha-${{ github.sha }}
+            ${{ steps.image.outputs.name }}:prod
+          cache-from: type=gha,scope=production
+          cache-to: type=gha,mode=max,scope=production
+
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: image
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Trust deploy host
+        shell: bash
+        run: |
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          printf '%s\n' '${{ secrets.DEPLOY_KNOWN_HOSTS }}' > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Upload Swarm stack definition
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          target="${DEPLOY_USER}@${DEPLOY_HOST}"
+          ssh "$target" \
+            "test -d '${DEPLOY_ROOT}/data' && test -r '${VPS_ENV_FILE}'"
+          scp deploy/stack.yml "$target:${VPS_STACK_FILE}"
+
+      - name: Log in and deploy stack
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          IMAGE_REPOSITORY: ${{ needs.image.outputs.image }}
+          IMAGE_TAG: sha-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test -n "$GHCR_USERNAME"
+          test -n "$GHCR_TOKEN"
+          [[ "$GHCR_USERNAME" =~ ^[A-Za-z0-9._-]+$ ]]
+          target="${DEPLOY_USER}@${DEPLOY_HOST}"
+          printf '%s' "$GHCR_TOKEN" | ssh "$target" \
+            "docker login ${REGISTRY} --username '${GHCR_USERNAME}' --password-stdin"
+          ssh "$target" \
+            "IMAGE_REPOSITORY='${IMAGE_REPOSITORY}' IMAGE_TAG='${IMAGE_TAG}' \
+             VPS_ENV_FILE='${VPS_ENV_FILE}' VPS_STACK_FILE='${VPS_STACK_FILE}' sh -s" <<'REMOTE'
+          set -eu
+          trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+
+          docker compose version >/dev/null
+          docker pull "${IMAGE_REPOSITORY}:${IMAGE_TAG}"
+          docker compose --env-file "$VPS_ENV_FILE" --file "$VPS_STACK_FILE" config |
+            docker stack deploy --with-registry-auth --resolve-image always --prune \
+              --compose-file - logviewer
+          docker service ls --filter name=logviewer_logviewer
+          docker service ps --no-trunc --filter desired-state=running logviewer_logviewer
+          REMOTE

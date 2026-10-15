@@ -9,6 +9,7 @@ dist/
 
 # ===== Cache log của app (nếu nằm trong repo) =====
 log-cache/
+runtime/
 
 # ===== File runtime / tạm =====
 *.log
