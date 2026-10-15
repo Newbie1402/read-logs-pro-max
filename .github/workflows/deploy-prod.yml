@@ -83,6 +83,13 @@ jobs:
           printf '%s\n' '${{ secrets.DEPLOY_KNOWN_HOSTS }}' > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/known_hosts"
 
+      # Connect before the first SSH/SCP command; DEPLOY_HOST should be the VPS Tailscale IP.
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+          version: stable
+
       - name: Upload Swarm stack definition
         shell: bash
         env:

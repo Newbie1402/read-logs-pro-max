@@ -233,6 +233,7 @@ Tạo GitHub Environment `production` và các secrets sau:
 | `DEPLOY_USER` | User SSH có quyền dùng Docker |
 | `DEPLOY_SSH_KEY` | Private key deploy |
 | `DEPLOY_KNOWN_HOSTS` | Kết quả `ssh-keyscan -H <host>` |
+| `TAILSCALE_AUTHKEY` | Auth key để GitHub Actions vào tailnet |
 | `GHCR_USERNAME` | User GitHub/PAT owner package |
 | `GHCR_TOKEN` | PAT có quyền đọc package GHCR trên VPS |
 
@@ -269,7 +270,9 @@ rotate ở mức 10 MB/file, giữ 5 file. Healthcheck dùng `/healthz`, còn
 Stack Swarm truyền các biến từ file `.env` cố định trên VPS vào container. Khi
 deploy bằng workflow, VPS tự pull image từ GHCR rồi Docker Compose plugin đọc
 `/opt/logviewer/data/.env` để render stack trước khi đưa vào Swarm; vì vậy máy
-manager cần có lệnh `docker compose` (không chỉ `docker stack`).
+manager cần có lệnh `docker compose` (không chỉ `docker stack`). Nếu dùng
+Tailscale, đặt `DEPLOY_HOST` là IP Tailscale của Swarm manager và cho phép SSH
+qua tailnet; workflow sẽ kết nối Tailscale trước lệnh SSH/SCP đầu tiên.
 
 Không cần chạy lệnh deploy thủ công; chỉ cần merge code từ `dev` vào `prod`.
 
