@@ -190,6 +190,89 @@ server {
 
 > **Bảo mật**: `APP_PASSWORD` khóa toàn bộ API (ai không có mật khẩu chỉ thấy trang nhập khẩu). Cookie phiên sống 30 ngày. Nếu chỉ dùng nội bộ qua VPN/WireGuard thì vẫn nên đặt để chặn scan bừa.
 
+### Deploy bằng Docker Compose
+
+Trên máy deploy, tạo file cấu hình và khởi động:
+
+```sh
+cp .env.example .env
+# Điền MINIO_* và APP_PASSWORD trong .env
+docker compose up -d --build
+```
+
+App sẽ chạy ở `http://<server>:8765`. Cache và file cấu hình được giữ trong
+volume `logviewer-data` khi container được build hoặc tạo lại. Đổi cổng public bằng
+`LOGVIEWER_PORT`, ví dụ `LOGVIEWER_PORT=9001 docker compose up -d`.
+
+Xem log hoặc dừng app:
+
+```sh
+docker compose logs -f logviewer
+docker compose down
+```
+
+### Deploy production bằng Docker Swarm + GitHub Actions
+
+Workflow production chạy khi có push vào nhánh `prod`. Nhánh làm việc dùng
+`feat/...` hoặc `fix/...`, mở PR vào `dev`; sau khi `dev` được merge/promote
+sang `prod`, GitHub Actions sẽ build image theo commit, push lên GHCR và
+deploy stack với tag immutable `sha-<commit>`.
+
+Trên Swarm manager, chuẩn bị một lần:
+
+```sh
+sudo mkdir -p /opt/logviewer/data
+sudo docker swarm init # chỉ chạy nếu máy chưa là Swarm manager
+```
+
+Tạo GitHub Environment `production` và các secrets sau:
+
+| Secret | Nội dung |
+|---|---|
+| `DEPLOY_HOST` | Host/IP của Swarm manager |
+| `DEPLOY_USER` | User SSH có quyền dùng Docker |
+| `DEPLOY_SSH_KEY` | Private key deploy |
+| `DEPLOY_KNOWN_HOSTS` | Kết quả `ssh-keyscan -H <host>` |
+| `GHCR_USERNAME` | User GitHub/PAT owner package |
+| `GHCR_TOKEN` | PAT có quyền đọc package GHCR trên VPS |
+
+GitHub Actions không lưu, upload hoặc ghi đè `.env`. Hãy tạo file cố định trên
+VPS tại `/opt/logviewer/data/.env` trước lần deploy đầu tiên:
+
+```env
+HOST=0.0.0.0
+PORT=8765
+CACHE_DIR=/data/log-cache
+APP_PASSWORD=doi-mat-khau-nay
+MINIO_CONSOLE_URL=https://minio.example.com
+MINIO_USERNAME=...
+MINIO_PASSWORD=...
+MINIO_BANK_TRANSACTION_BUCKET=...
+AUTO_CLEAN_DAYS=14
+KEEP_ARCHIVES=false
+```
+
+Phân quyền file cấu hình:
+
+```sh
+sudo mkdir -p /opt/logviewer/data
+sudo chmod 700 /opt/logviewer/data
+sudo chmod 600 /opt/logviewer/data/.env
+```
+
+Stack dùng bind mount `/opt/logviewer/data:/data`, nên cache, `.env` và config
+được giữ nguyên qua mọi lần deploy/rollback trên VPS. Service chỉ chạy một
+replica trên manager vì cache hiện là dữ liệu local; log container được Docker
+rotate ở mức 10 MB/file, giữ 5 file. Healthcheck dùng `/healthz`, còn
+`APP_PASSWORD` vẫn bảo vệ toàn bộ API nghiệp vụ.
+
+Stack Swarm truyền các biến từ file `.env` cố định trên VPS vào container. Khi
+deploy bằng workflow, VPS tự pull image từ GHCR rồi Docker Compose plugin đọc
+`/opt/logviewer/data/.env` để render stack trước khi đưa vào Swarm; vì vậy máy
+manager cần có lệnh `docker compose` (không chỉ `docker stack`).
+
+Không cần chạy lệnh deploy thủ công; chỉ cần merge code từ `dev` vào `prod`.
+
 ### 4. Hiệu năng với log lớn (đã tối ưu sẵn)
 
 - Trình đọc **virtualized + phân đoạn**: trình duyệt chỉ render ~300 dòng đang nhìn; session lớn chia thành đoạn 300.000 dòng, cuộn tới đáy tự nạp đoạn kế — chiều cao cuộn luôn dưới giới hạn của mọi trình duyệt (Firefox/Safari chỉ chịu ~17M px).
