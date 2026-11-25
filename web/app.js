@@ -258,6 +258,16 @@ function render() {
   handlePendingJump();
 }
 
+function selectEntry(el, announce = true) {
+  if (!el) return;
+  document.querySelectorAll('#viewport .entry.sel').forEach((x) => x.classList.remove('sel'));
+  el.classList.add('sel');
+  const selectedPos = Number(el.dataset.orig);
+  if (announce && Number.isFinite(selectedPos)) {
+    $('jump-status').textContent = 'Đang xem dòng #' + (selectedPos + 1).toLocaleString('vi-VN');
+  }
+}
+
 function fillBlock(i, blk) {
   // filter mode: từ đầu danh sách kết quả; all mode: offset theo đoạn đang xem
   const base = S.mode === 'filter' ? 0 : S.segStart;
@@ -329,17 +339,39 @@ function handlePendingJump() {
   const pj = S.pendingJump;
   if (!pj) return;
   if (Date.now() > pj.until) { S.pendingJump = null; return; }
+  if (!S.session || pj.pos < 0 || pj.pos >= S.session.total) {
+    S.pendingJump = null;
+    return;
+  }
   const b = Math.floor((pj.pos - S.segStart) / B);
+  if (b < 0 || b >= nBlocks()) return;
   const blk = S.blocks.get(b);
   if (blk && blk.filled) {
     const el = blk.el.querySelector(`[data-pos="${pj.pos}"]`);
     if (el) {
       const vp = $('viewport');
       const top = (blk.el.offsetTop + el.offsetTop) * (S.scaleK || 1);
-      vp.scrollTop = Math.max(0, top - 4);
-      el.classList.add('flash');
-      setTimeout(() => el.classList.remove('flash'), 1600);
-      S.pendingJump = null;
+      const target = top - Math.max(12, vp.clientHeight * 0.34);
+      if (Math.abs(vp.scrollTop - target) > 1) {
+        vp.scrollTop = Math.max(0, target);
+      }
+      selectEntry(el);
+      el.classList.add('flash', 'jump-target');
+      if (pj.lastTop == null || Math.abs(pj.lastTop - top) > 1) {
+        pj.lastTop = top;
+        pj.stableFrames = 0;
+      } else {
+        pj.stableFrames = (pj.stableFrames || 0) + 1;
+      }
+      if (pj.stableFrames >= 2) {
+        setTimeout(() => el.classList.remove('flash', 'jump-target'), 1800);
+        $('jump-status').textContent = 'Đã mở dòng #' + (pj.pos + 1).toLocaleString('vi-VN');
+        S.pendingJump = null;
+      } else {
+        requestAnimationFrame(() => {
+          if (S.pendingJump === pj) scheduleRender();
+        });
+      }
       return;
     }
   }
@@ -367,15 +399,24 @@ function setSegment(start) {
 }
 
 function gotoPos(pos) {
-  if (S.mode === 'filter') setMode('all');
+  pos = Number(pos);
+  if (!Number.isSafeInteger(pos) || pos < 0 || !S.session || pos >= S.session.total) {
+    toast('Số dòng không nằm trong log hiện tại', true);
+    return;
+  }
+  const fromSearch = S.mode === 'filter';
+  if (fromSearch) setMode('all');
   // pos nằm ngoài đoạn đang xem → chuyển đoạn trước
   if (pos < S.segStart || pos >= S.segStart + SEG) {
     setSegment(Math.floor(pos / SEG) * SEG);
   }
   const b = Math.floor((pos - S.segStart) / B);
   ensureOffsets();
-  $('viewport').scrollTop = Math.max(0, S.offsets[b] * (S.scaleK || 1) - 4);
-  S.pendingJump = { pos, until: Date.now() + 5000 };
+  $('viewport').scrollTop = Math.max(0, S.offsets[b] * (S.scaleK || 1) - 12);
+  S.pendingJump = { pos, until: Date.now() + 8000, stableFrames: 0, lastTop: null };
+  $('jump-status').textContent = fromSearch
+    ? 'Đang mở dòng #' + (pos + 1).toLocaleString('vi-VN') + ' trong log tổng…'
+    : 'Đang tới dòng #' + (pos + 1).toLocaleString('vi-VN') + '…';
   scheduleRender();
 }
 
@@ -426,7 +467,17 @@ function buildEntryEl(e, pos, orig) {
   d.className = 'entry';
   d.dataset.pos = pos;
   d.dataset.orig = orig;
-  d.appendChild(span('c-ln', String((orig != null ? orig : pos) + 1), 'Bấm để copy nguyên dòng log'));
+  if (S.mode === 'filter') {
+    d.classList.add('search-hit');
+    d.title = 'Bấm để mở dòng này trong log tổng';
+    d.setAttribute('role', 'button');
+    d.setAttribute('tabindex', '0');
+  }
+  d.appendChild(span(
+    'c-ln',
+    String((orig != null ? orig : pos) + 1),
+    S.mode === 'filter' ? 'Bấm để mở dòng này trong log tổng' : 'Bấm để copy nguyên dòng log',
+  ));
   if (e.ts) {
     const ts = document.createElement('span');
     ts.className = 'c-ts';
@@ -646,6 +697,7 @@ function unpin() {
 function setMode(mode) {
   if (S.mode === mode) return;
   S.mode = mode;
+  $('viewport').classList.toggle('is-filter', mode === 'filter');
   if (mode === 'all') {
     $('filter-bar').classList.add('hidden');
     S.segStart = 0;
@@ -687,11 +739,13 @@ async function openSession(id) {
   const info = await api(`/api/session/${id}/info`);
   S.session = info;
   S.mode = 'all';
+  $('viewport').classList.remove('is-filter');
   S.segStart = 0;
   S.filterEntries = null;
   S.level = '';
   S.q = '';
   $('search').value = '';
+  $('jump-status').textContent = '';
   document.querySelectorAll('#level-chips button').forEach((b) => b.classList.toggle('on', b.dataset.level === ''));
   $('viewer').classList.remove('hidden');
   $('picker').classList.add('hidden');
@@ -808,13 +862,15 @@ async function doSearch() {
   try {
     const r = await api(`/api/session/${S.session.id}/search?q=${encodeURIComponent(q)}&level=${encodeURIComponent(level)}&max=20000`);
     S.mode = 'filter';
+    $('viewport').classList.add('is-filter');
     S.filterEntries = r.matches;
-    S.q = q;
+    S.q = searchHighlightTerm(q);
     S.filterLabel =
       `${r.total.toLocaleString('vi-VN')} kết quả` +
       (q ? ` cho "${q}"` : '') + (level ? ` · level=${level}` : '') +
       (r.truncated ? ' — chỉ hiển thị 20.000 dòng đầu (thu hẹp tìm kiếm để xem đủ)' : '');
     $('filter-text').textContent = S.filterLabel;
+    $('jump-status').textContent = '';
     resetViewData();
   } catch (err) {
     $('filter-text').textContent = '';
@@ -824,6 +880,7 @@ async function doSearch() {
 
 function clearFilter() {
   S.mode = 'all';
+  $('viewport').classList.remove('is-filter');
   S.filterEntries = null;
   S.level = '';
   S.q = '';
@@ -831,7 +888,19 @@ function clearFilter() {
   document.querySelectorAll('#level-chips button').forEach((b) => b.classList.toggle('on', b.dataset.level === ''));
   $('filter-bar').classList.add('hidden');
   $('search').value = '';
+  $('jump-status').textContent = '';
   resetViewData();
+}
+
+function searchHighlightTerm(query) {
+  const tokens = query.match(/"[^"\\]*(?:\\.[^"\\]*)*"|'[^'\\]*(?:\\.[^'\\]*)*'|\S+/g) || [];
+  const structured = tokens.some((token) => token.startsWith('-') || /^(level|lv|thread|th|logger|log):/i.test(token));
+  if (!structured) return query;
+  for (const token of tokens) {
+    if (token.startsWith('-') || /^(level|lv|thread|th|logger|log):/i.test(token)) continue;
+    return token.replace(/^(["'])(.*)\1$/, '$2');
+  }
+  return '';
 }
 
 // ---------- cache modal ----------
@@ -1033,6 +1102,21 @@ async function copyJson() {
   catch (_) { toast('Không copy được', true); }
 }
 
+async function quitApp() {
+  if (!confirm('Đóng Log Viewer và server local?')) return;
+  const btn = $('btn-quit');
+  btn.disabled = true;
+  btn.textContent = 'Đang thoát…';
+  try {
+    await api('/api/shutdown', { method: 'POST' });
+    toast('Log Viewer đã đóng');
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = 'Thoát';
+    toast('Không thể thoát app: ' + err.message, true);
+  }
+}
+
 // ---------- events ----------
 function wire() {
   // picker
@@ -1045,7 +1129,10 @@ function wire() {
 
   // viewer toolbar
   $('btn-back').addEventListener('click', backToPicker);
-  $('btn-end').addEventListener('click', () => gotoPos(total() - 1));
+  $('btn-end').addEventListener('click', () => {
+    const last = total() - 1;
+    if (last >= 0) gotoPos(last);
+  });
   $('btn-wrap').addEventListener('click', () => { S.wrap = !S.wrap; applyWrap(); });
   $('btn-tz').addEventListener('click', () => { S.localTime = !S.localTime; applyTz(); });
   $('btn-clear-filter').addEventListener('click', clearFilter);
@@ -1078,6 +1165,10 @@ function wire() {
     const ln = e.target.closest && e.target.closest('.c-ln');
     if (ln) {
       const entry = ln.closest('.entry');
+      if (S.mode === 'filter') {
+        gotoPos(+entry.dataset.orig);
+        return;
+      }
       const pos = +entry.dataset.pos;
       const eData = entryAt(pos);
       const raw = eData ? (eData.raw || eData.m) : '';
@@ -1091,9 +1182,14 @@ function wire() {
       gotoPos(+entry.dataset.orig);
       return;
     }
-    // chọn dòng để soi (không làm gì khác)
-    document.querySelectorAll('#viewport .entry.sel').forEach((x) => x.classList.remove('sel'));
-    entry.classList.add('sel');
+    selectEntry(entry);
+  });
+  vp.addEventListener('keydown', (e) => {
+    if ((e.key !== 'Enter' && e.key !== ' ') || !e.target.closest('.entry')) return;
+    e.preventDefault();
+    const entry = e.target.closest('.entry');
+    if (S.mode === 'filter') gotoPos(+entry.dataset.orig);
+    else selectEntry(entry);
   });
 
   // json panel
@@ -1152,6 +1248,7 @@ function wire() {
 
   // header
   $('btn-settings').addEventListener('click', openSettings);
+  $('btn-quit').addEventListener('click', quitApp);
   $('btn-cache').addEventListener('click', openCache);
   $('btn-import').addEventListener('click', () => $('file-input').click());
   $('file-input').addEventListener('change', async () => {

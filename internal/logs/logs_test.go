@@ -1,6 +1,7 @@
 package logs
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -162,5 +163,52 @@ func TestSearch(t *testing.T) {
 	})
 	if count != 5 {
 		t.Errorf("dừng sớm không hoạt động: %d", count)
+	}
+}
+
+func TestSearchMultipleConditions(t *testing.T) {
+	content := strings.Join([]string{
+		"2026-09-15T14:49:24.108Z  INFO 1 --- [app] [worker-1] c.e.Info : timeout waiting for retry",
+		"2026-09-15T14:49:25.108Z  ERROR 1 --- [app] [worker-2] c.e.Bank : timeout waiting for retry",
+		"2026-09-15T14:49:26.108Z  ERROR 1 --- [app] [worker-2] c.e.Bank : timeout health check",
+	}, "\n") + "\n"
+	ix, err := BuildIndex(writeTestFile(t, content))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hits []int64
+	err = Search(ix, `"timeout waiting" level:ERROR thread:worker-2 -retry`, "", func(local int64, _ Entry) bool {
+		hits = append(hits, local)
+		return true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("negative term phải loại kết quả, got %v", hits)
+	}
+
+	hits = nil
+	err = Search(ix, `"timeout waiting" level:ERROR thread:worker-2`, "", func(local int64, _ Entry) bool {
+		hits = append(hits, local)
+		return true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0] != 1 {
+		t.Fatalf("lọc nhiều điều kiện = %v, want [1]", hits)
+	}
+
+	hits = nil
+	err = SearchScan(ix, `timeout level:ERROR thread:worker-2 -health`, "", context.Background(), func(local int64, _ Entry) bool {
+		hits = append(hits, local)
+		return true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0] != 1 {
+		t.Fatalf("SearchScan nhiều điều kiện = %v, want [1]", hits)
 	}
 }
