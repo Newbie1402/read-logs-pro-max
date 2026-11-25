@@ -41,15 +41,17 @@ type ScanFile struct {
 }
 
 type App struct {
-	cfg      *config.Config
-	st       *store.Store
-	webFS    fs.FS
-	authPass string // APP_PASSWORD — rỗng = không khóa
-	mu       sync.Mutex
-	client   s3x.StorageClient
-	mode     string // "s3" | "console"
-	sessions map[string]*logs.Session
-	jobs     map[string]*Job
+	cfg          *config.Config
+	st           *store.Store
+	webFS        fs.FS
+	authPass     string // APP_PASSWORD — rỗng = không khóa
+	mu           sync.Mutex
+	client       s3x.StorageClient
+	mode         string // "s3" | "console"
+	sessions     map[string]*logs.Session
+	jobs         map[string]*Job
+	shutdownCh   chan struct{}
+	shutdownOnce sync.Once
 }
 
 func New(cfg *config.Config, st *store.Store, webFS embed.FS, authPass string) (*App, error) {
@@ -59,8 +61,9 @@ func New(cfg *config.Config, st *store.Store, webFS embed.FS, authPass string) (
 	}
 	app := &App{
 		cfg: cfg, st: st, webFS: sub, authPass: authPass,
-		sessions: map[string]*logs.Session{},
-		jobs:     map[string]*Job{},
+		sessions:   map[string]*logs.Session{},
+		jobs:       map[string]*Job{},
+		shutdownCh: make(chan struct{}),
 	}
 	app.reconnect()
 	go app.gcLoop()
@@ -186,9 +189,22 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/cache/open", a.handleCacheOpen)
 	mux.HandleFunc("POST /api/import-local", a.handleImportLocal)
 	mux.HandleFunc("POST /api/import-upload", a.handleImportUpload)
+	mux.HandleFunc("POST /api/shutdown", a.handleShutdown)
 
 	mux.Handle("GET /", http.FileServerFS(a.webFS))
 	return a.authGate(mux)
+}
+
+// ShutdownRequested cho phép main dừng HTTP server theo yêu cầu từ UI local.
+func (a *App) ShutdownRequested() <-chan struct{} { return a.shutdownCh }
+
+func (a *App) handleShutdown(w http.ResponseWriter, _ *http.Request) {
+	if a.cfg.Host != "127.0.0.1" && a.cfg.Host != "localhost" && a.cfg.Host != "::1" {
+		fail(w, http.StatusForbidden, fmt.Errorf("chỉ được thoát từ app local"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	a.shutdownOnce.Do(func() { close(a.shutdownCh) })
 }
 
 // ---------- auth gate (VPS mode) ----------

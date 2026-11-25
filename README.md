@@ -24,7 +24,8 @@ Một file nhị phân duy nhất ~9 MB, không cần cài đặt gì thêm, RAM
 - Level tô màu: ERROR / WARN / INFO / DEBUG; dòng ERROR có nền gợn đỏ nhẹ.
 - Stack trace / exception được gộp vào đúng dòng log cha.
 - **Kéo giãn từng cột** (thời gian, thread, logger…) — độ rộng được ghi nhớ.
-- **Tìm kiếm** không phân biệt hoa thường + lọc theo level, từ khớp được **tô nổi** ngay trong dòng.
+- **Tìm kiếm nhiều điều kiện** không phân biệt hoa thường + lọc theo level, từ khớp được **tô nổi** ngay trong dòng. Các điều kiện có cú pháp được kết hợp theo AND; hỗ trợ cụm từ trong dấu ngoặc kép, loại trừ bằng `-`, và field `level:`, `thread:`, `logger:`. Ví dụ: `timeout level:ERROR thread:tomcat -health`. Truy vấn văn bản thuần nhiều từ vẫn được giữ như một cụm liên tục để tương thích.
+- Bấm một kết quả search sẽ mở đúng dòng đó trong log tổng; dòng đích được căn giữa và tô sáng để đọc thêm context trước/sau.
 - **Nhảy tới dòng #** bất kỳ, nút Về cuối, copy nguyên dòng bằng cách bấm vào số dòng.
 
 ### JSON trong log
@@ -67,7 +68,8 @@ Xem `.env.example` cho đầy đủ các tùy chọn (`PORT`, `CACHE_DIR`, `KEEP
 
 ### 2. Khởi động
 
-- **macOS**: mở Terminal, kéo file `LogViewer-macOS-arm64` (Apple Silicon) hoặc `LogViewer-macOS-amd64` (Intel) vào cửa sổ, Enter.
+- **macOS**: chạy `./build.sh mac-app` để tạo `dist/LogViewer.app`, sau đó kéo app này vào Dock và bấm để mở nhanh. Nút **Thoát** trong giao diện sẽ dừng server local gọn gàng, không cần quay lại Terminal bấm Ctrl+C.
+- Nếu không cần app bundle: mở Terminal, kéo file `LogViewer-macOS-arm64` (Apple Silicon) hoặc `LogViewer-macOS-amd64` (Intel) vào cửa sổ, Enter.
 - **Windows**: double-click `LogViewer-Windows-amd64.exe`.
 
 Trình duyệt tự mở tại `http://localhost:8765` (đổi cổng bằng `PORT` trong `.env`).
@@ -303,7 +305,8 @@ Số liệu đo thực tế (Mac M1, **1.000.000 dòng / 210MB text / 17MB nén*
 Yêu cầu: Go >= 1.22 (`brew install go`).
 
 ```sh
-./build.sh       # build dist/ cho macOS arm64 + amd64 và Windows amd64
+./build.sh       # build dist/ cho macOS arm64 + amd64, Windows/Linux và tạo LogViewer.app
+./build.sh mac-app  # chỉ build/tạo dist/LogViewer.app để ghim vào Dock
 go test ./...    # chạy unit test
 go vet ./...     # kiểm tra tĩnh
 ```

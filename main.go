@@ -88,7 +88,10 @@ func main() {
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-	<-sig
+	select {
+	case <-sig:
+	case <-app.ShutdownRequested():
+	}
 	fmt.Println("\nĐang tắt...")
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

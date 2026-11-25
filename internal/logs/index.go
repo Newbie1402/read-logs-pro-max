@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 const chunkSize = 64 * 1024
@@ -85,7 +86,7 @@ type entryReader struct {
 	f    *os.File
 	r    *bufio.Reader
 	ix   *FileIndex
-	off  int64 // byte offset hiện tại của r
+	off  int64  // byte offset hiện tại của r
 	rest string // dòng dư từ lần đọc trước
 }
 
@@ -241,19 +242,11 @@ func Search(ix *FileIndex, q, level string, cb func(local int64, e Entry) bool) 
 		return err
 	}
 	defer er.Close()
-	wantLevel := strings.ToUpper(level)
-	qLower := strings.ToLower(q)
+	query := parseSearchQuery(q, level)
 	local := int64(0)
 	er.scanFrom(func(re rawEntry) bool {
 		e := toEntry(re)
-		match := true
-		if wantLevel != "" && wantLevel != "ALL" {
-			match = e.Level == wantLevel
-		}
-		if match && qLower != "" {
-			match = strings.Contains(strings.ToLower(e.Raw), qLower)
-		}
-		if match {
+		if query.matches(re.lines) {
 			if !cb(local, e) {
 				return false
 			}
@@ -265,6 +258,165 @@ func Search(ix *FileIndex, q, level string, cb func(local int64, e Entry) bool) 
 }
 
 // ---------- search nhanh cho file lớn (hàng triệu dòng) ----------
+
+type searchQuery struct {
+	include       []string
+	exclude       []string
+	level         string
+	thread        string
+	logger        string
+	excludeLevels []string
+}
+
+// parseSearchQuery hỗ trợ cụm từ trong dấu ngoặc kép, điều kiện theo header
+// và từ khóa loại trừ. Các điều kiện có cú pháp được kết hợp theo AND.
+func parseSearchQuery(q, level string) searchQuery {
+	query := searchQuery{level: strings.ToUpper(strings.TrimSpace(level))}
+	if query.level == "ALL" {
+		query.level = ""
+	}
+	tokens := splitSearchTokens(q)
+	structured := false
+	for _, token := range tokens {
+		if strings.HasPrefix(token, "-") || strings.ContainsRune(token, ':') || strings.ContainsRune(q, '"') || strings.ContainsRune(q, '\'') {
+			structured = true
+			break
+		}
+	}
+	// Giữ tương thích với cách tìm cũ: truy vấn tự do có khoảng trắng là
+	// một chuỗi liên tục. Muốn AND nhiều từ, dùng field hoặc -loại trừ.
+	if !structured && len(tokens) > 1 {
+		if phrase := strings.TrimSpace(q); phrase != "" {
+			query.include = []string{phrase}
+		}
+		return query
+	}
+	for _, token := range tokens {
+		if token == "" || token == "+" {
+			continue
+		}
+		negative := strings.HasPrefix(token, "-") && len(token) > 1
+		if negative {
+			token = token[1:]
+		}
+		key, value := token, ""
+		if i := strings.IndexByte(token, ':'); i > 0 {
+			key, value = strings.ToLower(token[:i]), token[i+1:]
+		}
+		if value != "" {
+			switch key {
+			case "level", "lv":
+				if negative {
+					query.excludeLevels = append(query.excludeLevels, strings.ToUpper(value))
+				} else {
+					query.level = strings.ToUpper(value)
+				}
+				continue
+			case "thread", "th":
+				if !negative {
+					query.thread = value
+					continue
+				}
+			case "logger", "log":
+				if !negative {
+					query.logger = value
+					continue
+				}
+			}
+		}
+		if negative {
+			query.exclude = append(query.exclude, token)
+		} else {
+			query.include = append(query.include, token)
+		}
+	}
+	return query
+}
+
+func splitSearchTokens(q string) []string {
+	var out []string
+	var b strings.Builder
+	var quote rune
+	escaped := false
+	flush := func() {
+		if b.Len() > 0 {
+			out = append(out, b.String())
+			b = strings.Builder{}
+		}
+	}
+	for _, r := range q {
+		if escaped {
+			b.WriteRune(r)
+			escaped = false
+			continue
+		}
+		if r == '\\' {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+			} else {
+				b.WriteRune(r)
+			}
+			continue
+		}
+		if r == '\'' || r == '"' {
+			quote = r
+		} else if unicode.IsSpace(r) {
+			flush()
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	if escaped {
+		b.WriteByte('\\')
+	}
+	flush()
+	return out
+}
+
+func (q searchQuery) matches(lines []string) bool {
+	if len(lines) == 0 {
+		return false
+	}
+	_, level, _, thread, logger, _, ok := ParseHeader(lines[0])
+	if q.level != "" && q.level != "ALL" && (!ok || level != q.level) {
+		return false
+	}
+	for _, excluded := range q.excludeLevels {
+		if ok && level == excluded {
+			return false
+		}
+	}
+	if q.thread != "" && (!ok || !containsFold(thread, q.thread)) {
+		return false
+	}
+	if q.logger != "" && (!ok || !containsFold(logger, q.logger)) {
+		return false
+	}
+	for _, term := range q.include {
+		if !containsInLines(lines, term) {
+			return false
+		}
+	}
+	for _, term := range q.exclude {
+		if containsInLines(lines, term) {
+			return false
+		}
+	}
+	return true
+}
+
+func containsInLines(lines []string, term string) bool {
+	for _, line := range lines {
+		if containsFold(line, term) {
+			return true
+		}
+	}
+	return false
+}
 
 func lowerByte(c byte) byte {
 	if c >= 'A' && c <= 'Z' {
@@ -340,20 +492,15 @@ func SearchScan(ix *FileIndex, q, level string, ctx context.Context, cb func(loc
 	}
 	defer er.Close()
 
-	wantLevel := strings.ToUpper(level)
-	mustLv := wantLevel != "" && wantLevel != "ALL"
-	qLower := strings.ToLower(q)
-	mustQ := qLower != ""
+	query := parseSearchQuery(q, level)
 
 	var buf []string // dòng của entry đang mở (tái sử dụng)
-	lvOK := false
-	qOK := false
 	started := false // entry hiện tại có bắt đầu bằng dòng header hay không
 	local := int64(0)
 
 	flush := func() bool {
 		if len(buf) > 0 && started {
-			if (lvOK || !mustLv) && (qOK || !mustQ) {
+			if query.matches(buf) {
 				e := buildEntry(buf)
 				if !cb(local, e) {
 					return false
@@ -363,8 +510,6 @@ func SearchScan(ix *FileIndex, q, level string, ctx context.Context, cb func(loc
 		}
 		buf = buf[:0]
 		started = false
-		lvOK = false
-		qOK = false
 		return true
 	}
 
@@ -385,19 +530,9 @@ func SearchScan(ix *FileIndex, q, level string, ctx context.Context, cb func(loc
 			}
 			buf = append(buf, line)
 			started = true
-			if mustLv {
-				_, lv, _, _, _, _, okh := ParseHeader(line)
-				lvOK = okh && lv == wantLevel
-			}
-			if mustQ {
-				qOK = containsFold(line, qLower)
-			}
 		} else if ok {
 			if started {
 				buf = append(buf, line)
-				if mustQ && !qOK {
-					qOK = containsFold(line, qLower)
-				}
 			}
 			// dòng rác trước entry đầu tiên: bỏ qua
 		}

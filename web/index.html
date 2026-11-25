@@ -58,6 +58,7 @@
   <button id="btn-import" title="Mở file .tar.gz đã tải sẵn trên máy">Mở file .tar.gz</button>
   <button id="btn-cache" title="Quản lý & dọn rác file log đã tải">Cache</button>
   <button id="btn-settings">Cài đặt</button>
+  <button id="btn-quit" class="danger" title="Đóng server local và thoát Log Viewer">Thoát</button>
 </header>
 
 <!-- CHỌN KHOẢNG THỜI GIAN -->
@@ -89,7 +90,7 @@
 <main id="viewer" class="hidden">
   <div class="toolbar">
     <button id="btn-back" title="Quay lại chọn khoảng thời gian">← Chọn ngày</button>
-    <input id="search" placeholder="Tìm trong logs… (Enter)" spellcheck="false">
+    <input id="search" aria-label="Tìm trong logs" placeholder="Tìm lỗi, traceId, API… (Enter)" title="AND mặc định · \"cụm từ\" · -loại trừ · level:ERROR · thread:tomcat · logger:bank" spellcheck="false">
     <div class="chips" id="level-chips">
       <button data-level="" class="on">Tất cả</button>
       <button data-level="ERROR">ERROR</button>
@@ -102,11 +103,14 @@
     <button id="btn-tz" title="Đổi giữa giờ máy (UTC+7) và giờ gốc UTC">Giờ máy</button>
     <button id="btn-end" title="Nhảy tới dòng cuối">Về cuối</button>
     <label class="jumpl">Đến dòng <input id="jump-line" type="number" min="1" placeholder="#"></label>
+    <span id="jump-status" class="jump-status" aria-live="polite"></span>
     <span class="spacer"></span>
     <button id="btn-json" title="Bật/tắt khung xem JSON bên phải (rê chuột vào đoạn JSON để xem nhanh)">Khung JSON</button>
   </div>
   <div id="filter-bar" class="hidden">
+    <span class="filter-kicker">KẾT QUẢ TÌM</span>
     <span id="filter-text"></span>
+    <span class="filter-hint">Bấm dòng để mở log tổng · AND · &quot;cụm từ&quot; · -loại trừ · level:/thread:/logger:</span>
     <button id="btn-clear-filter" class="small">Bỏ lọc, xem toàn bộ</button>
   </div>
   <div id="sess-info" class="muted thin"></div>
